@@ -2,7 +2,7 @@ import pandas as pd  # type: ignore
 import numpy as np
 
 # Load long-run log
-df = pd.read_csv("RL_episodes.csv")
+df = pd.read_csv("RL_long.csv")
 
 dt = 0.1
 steps_per_ep = 100
