@@ -124,7 +124,7 @@ def main():
     tm = client.get_trafficmanager()
     tm_port = tm.get_port()
 
-    # Asynchronous mode
+    # Synchronous mode
     settings = world.get_settings()
     settings.synchronous_mode = True
     settings.fixed_delta_seconds = 0.1         # match your controller dt
@@ -406,11 +406,12 @@ def main():
         except Exception:
             pass
 
+    # Restore async mode before exit
     settings = world.get_settings()
-settings.synchronous_mode = True
-settings.fixed_delta_seconds = None
-world.apply_settings(settings)
-tm.set_synchronous_mode(False)
+    settings.synchronous_mode = False
+    settings.fixed_delta_seconds = None
+    world.apply_settings(settings)
+    tm.set_synchronous_mode(False)
 
 if __name__ == '__main__':
     main()
