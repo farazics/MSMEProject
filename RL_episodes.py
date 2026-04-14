@@ -126,8 +126,11 @@ def main():
 
     # Asynchronous mode
     settings = world.get_settings()
-    settings.synchronous_mode = False
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = 0.1         # match your controller dt
     world.apply_settings(settings)
+
+    tm.set_synchronous_mode(True)              # TM runs in lockstep with world
 
     # Get spawn points
     spawns = world.get_map().get_spawn_points()
@@ -390,7 +393,7 @@ def main():
                 collision_history["collision_count"]
             ])
 
-            time.sleep(controller.dt)
+            world.tick()                # <-- advance simulation one step
 
     # Save Q-table after long run
     rl_agent.save(q_table_path)
@@ -402,6 +405,12 @@ def main():
             a.destroy()
         except Exception:
             pass
+
+    settings = world.get_settings()
+settings.synchronous_mode = True
+settings.fixed_delta_seconds = None
+world.apply_settings(settings)
+tm.set_synchronous_mode(False)
 
 if __name__ == '__main__':
     main()
