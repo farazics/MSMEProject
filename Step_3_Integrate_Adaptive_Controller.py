@@ -22,6 +22,11 @@ def get_vehicle_state(vehicle):
 
 
 def main():
+    client = None
+    world = None
+    tm = None
+    original_settings = None
+
     try:
         print("Connecting to CARLA server...")
         client = carla.Client('localhost', 2000)
@@ -35,11 +40,15 @@ def main():
     # Traffic Manager setup
     tm = client.get_trafficmanager()
     tm_port = tm.get_port()
+    original_settings = world.get_settings()
 
-    # Asynchronous mode for now (you can switch to sync later)
+    # Synchronous mode
     settings = world.get_settings()
-    settings.synchronous_mode = False
+    settings.synchronous_mode = True           # world waits for world.tick()
+    settings.fixed_delta_seconds = 0.1         # match controller.dt
     world.apply_settings(settings)
+
+    tm.set_synchronous_mode(True)
 
     # Get spawn points
     spawns = world.get_map().get_spawn_points()
@@ -108,6 +117,9 @@ def main():
         carla.Rotation(pitch=-90)
     ))
 
+    # Initialize sync state with a first tick before the main loop
+    world.tick()
+
     # Logging setup
     log_filename = "CBF_Controller.csv"
     with open(log_filename, mode='w', newline='') as csvfile:
@@ -132,7 +144,7 @@ def main():
         v_des = 12.0  # free-flow desired speed
         nominal_acc = 1.0
 
-        for i in range(1, 2001):
+        for i in range(1, 10001):
             # Ego state
             av_state = get_vehicle_state(av)
             v = math.hypot(av_state['vx'], av_state['vy'])
@@ -269,7 +281,7 @@ def main():
                 f"t_headway={time_headway:.2f} s"
             )
 
-            time.sleep(controller.dt)
+            world.tick()   # advance the simulation one step
 
     print(f"Simulation complete. Log saved to {log_filename}")
 
