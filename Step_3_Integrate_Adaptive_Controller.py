@@ -135,7 +135,7 @@ def main():
         v_des = 12.0  # free-flow desired speed
         nominal_acc = 1.0
 
-        for i in range(1, 2001):
+        for i in range(1, 10001):
             # Ego state
             av_state = get_vehicle_state(av)
             v = math.hypot(av_state['vx'], av_state['vy'])
