@@ -4,6 +4,8 @@ import math
 import random
 import numpy as np
 import carla
+import glob
+import os
 
 from adaptive_controller import AdaptiveController
 
@@ -107,7 +109,21 @@ class DiscreteRLAgent:
 
 
 def main():
-    run_id = 2  # change this to 2, 3, ... each time you train
+    # Auto-increment run id based on existing RL_long_run*.csv files
+    existing = glob.glob("RL_long_run*.csv")
+    if not existing:
+        run_id = 1
+    else:
+        numbers = []
+        for fname in existing:
+            base = os.path.basename(fname)          # e.g. RL_long_run3.csv
+            digits = "".join(ch for ch in base if ch.isdigit())
+            if digits:
+                numbers.append(int(digits))
+        run_id = max(numbers) + 1 if numbers else 1
+
+    print(f"Starting RL run_id = {run_id}")
+    
     try:
         print("Connecting to CARLA server...")
         client = carla.Client('localhost', 2000)
