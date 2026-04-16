@@ -36,10 +36,13 @@ def main():
     tm = client.get_trafficmanager()
     tm_port = tm.get_port()
 
-    # Asynchronous mode for now (you can switch to sync later)
+    # Synchronous mode
     settings = world.get_settings()
-    settings.synchronous_mode = False
+    settings.synchronous_mode = True           # world waits for world.tick()
+    settings.fixed_delta_seconds = 0.1         # match controller.dt
     world.apply_settings(settings)
+
+    tm.set_synchronous_mode(True)
 
     # Get spawn points
     spawns = world.get_map().get_spawn_points()
@@ -269,7 +272,7 @@ def main():
                 f"t_headway={time_headway:.2f} s"
             )
 
-            time.sleep(controller.dt)
+            world.tick()   # advance the simulation one step
 
     print(f"Simulation complete. Log saved to {log_filename}")
 
