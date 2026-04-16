@@ -5,7 +5,7 @@ import numpy as np
 # --- Load logs from Step 3 and Step 4 ---
 
 baseline = pd.read_csv("CBF_Controller.csv")   # Step 3
-rl_log   = pd.read_csv("RL_long_latest.csv")              # Step 4
+rl_log   = pd.read_csv("RL_long.csv")              # Step 4
 
 dt = 0.1  # simulation time step (s), keep in sync with your controllers
 
