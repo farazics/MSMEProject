@@ -107,6 +107,7 @@ class DiscreteRLAgent:
 
 
 def main():
+    run_id = 1  # change this to 2, 3, ... each time you train
     try:
         print("Connecting to CARLA server...")
         client = carla.Client('localhost', 2000)
@@ -200,7 +201,7 @@ def main():
     ))
 
     # Logging setup: one long run
-    log_filename = "RL_long.csv"
+    log_filename = f"RL_long_run{run_id}.csv"
     steps_total = 10000  # e.g. 10k steps
 
     with open(log_filename, mode='w', newline='') as csvfile:
