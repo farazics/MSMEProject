@@ -31,9 +31,9 @@ class DiscreteRLAgent:
                  actions=(-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0),
                  alpha=0.05,
                  gamma=0.99,
-                 eps_start=1.0,
+                 eps_start=0.5
                  eps_end=0.05,
-                 eps_decay=1e-4,
+                 eps_decay=5e-4,
                  q_init_path=None):
         # Discretization
         self.v_bins = v_bins
@@ -333,22 +333,28 @@ def main():
             a_cmd_total = a_acc + a_rl
             a_cmd_total = float(np.clip(a_cmd_total, -4.0, 2.0))
 
-            # Reward: comfort + safety + collisions
+            # Reward: comfort + speed tracking + safety + collisions
+
+            # Comfort penalties
             jerk = (a_cmd_total - prev_a_cmd_total) / controller.dt
-            # Stronger jerk penalty than before
             reward = -0.1 * (a_cmd_total ** 2) - 0.05 * (jerk ** 2)
 
+            # Speed tracking: small penalty for being far from desired speed
+            speed_error = v_des - v
+            reward -= 0.01 * (speed_error ** 2)
+            
+            # Time headway / safety
             time_headway = float('nan')
             if v > 0.1:
                 time_headway = dist_headway / v
             if time_headway < 1.0:
                 reward -= 5.0  # unsafe headway penalty
-
+            
             # Collision penalty: new collisions since last step
             collision_count_now = collision_history["collision_count"]
             if collision_count_now > collision_count_prev:
                 collisions_this_step = collision_count_now - collision_count_prev
-                reward -= 50.0 * collisions_this_step  # large penalty per collision
+                reward -= 100.0 * collisions_this_step  # stronger penalty per collision
             collision_count_prev = collision_count_now
 
             # RL update
