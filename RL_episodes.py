@@ -36,7 +36,7 @@ class DiscreteRLAgent:
         # Discretization
         self.v_bins = v_bins
         self.d_bins = d_bins
-        self.dv_bins = dv_bins
+        self.dv_bins = dv_binsg
         self.actions = actions
 
         # RL params
