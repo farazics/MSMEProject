@@ -400,6 +400,10 @@ def main():
     rl_agent.save(q_table_path)
     print(f"Simulation complete. Log saved to {log_filename}")
 
+     # Also keep a copy as RL_long_latest.csv for quick inspection
+    import shutil
+    shutil.copyfile(log_filename, "RL_long_latest.csv")
+
     # Clean up actors (including sensor) to avoid warnings
     for a in actors_to_destroy:
         try:
