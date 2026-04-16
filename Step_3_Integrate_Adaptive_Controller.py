@@ -22,6 +22,11 @@ def get_vehicle_state(vehicle):
 
 
 def main():
+    client = None
+    world = None
+    tm = None
+    original_settings = None
+
     try:
         print("Connecting to CARLA server...")
         client = carla.Client('localhost', 2000)
@@ -35,6 +40,7 @@ def main():
     # Traffic Manager setup
     tm = client.get_trafficmanager()
     tm_port = tm.get_port()
+    original_settings = world.get_settings()
 
     # Synchronous mode
     settings = world.get_settings()
@@ -110,6 +116,9 @@ def main():
         av_tf.location + carla.Location(z=30),
         carla.Rotation(pitch=-90)
     ))
+
+    # Initialize sync state with a first tick before the main loop
+    world.tick()
 
     # Logging setup
     log_filename = "CBF_Controller.csv"
