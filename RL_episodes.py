@@ -107,7 +107,7 @@ class DiscreteRLAgent:
 
 
 def main():
-    run_id = 1  # change this to 2, 3, ... each time you train
+    run_id = 2  # change this to 2, 3, ... each time you train
     try:
         print("Connecting to CARLA server...")
         client = carla.Client('localhost', 2000)
