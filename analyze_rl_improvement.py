@@ -1,138 +1,107 @@
-import glob
-import os
 import pandas as pd  # type: ignore
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
 
-dt = 0.1  # time step
+# Load long-run log
+df = pd.read_csv("RL_long.csv")
 
-# --- Load all historical RL runs ---
+# -------------------------------------------------
+# Global configuration
+# -------------------------------------------------
+dt = 0.1             # must match your controller timestep
+steps_per_ep = 100   # virtual episode length in steps
 
-# Assumes files named like RL_long_run1.csv, RL_long_run2.csv, ...
-run_files = sorted(glob.glob("RL_long_run*.csv"))
+# Add a virtual episode index: 1..num_episodes
+num_episodes = df["step"].max() // steps_per_ep
+df["episode"] = ((df["step"] - 1) // steps_per_ep) + 1
 
-if not run_files:
-    raise FileNotFoundError("No RL_long_run*.csv files found in current folder.")
+# If you have a run index column (e.g., "run"), keep it; otherwise, assume one run
+if "run" not in df.columns and "run_index" not in df.columns:
+    df["run_index"] = 1
+elif "run" in df.columns:
+    df = df.rename(columns={"run": "run_index"})
 
-runs = []
-for fname in run_files:
-    df = pd.read_csv(fname)
-    # Extract run index from filename, e.g. RL_long_run3.csv -> 3
-    base = os.path.basename(fname)
-    run_id_str = "".join(ch for ch in base if ch.isdigit())
-    run_id = int(run_id_str) if run_id_str else 0
-    df["run_id"] = run_id
-    runs.append(df)
 
-# Sort runs by run_id
-runs = sorted(runs, key=lambda df: df["run_id"].iloc[0])
+# -------------------------------------------------
+# Collision event extraction (1 per collision)
+# -------------------------------------------------
+def add_collision_events(df_in: pd.DataFrame) -> pd.DataFrame:
+    df_out = df_in.copy()
+    if "collision_count" in df_out.columns:
+        # Per-step increment of the cumulative counter
+        df_out["collision_delta"] = df_out["collision_count"].diff().fillna(0)
 
-# Convenience: colors / labels
-colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(runs)))
+        # Mark the START of each collision (first positive delta after zero)
+        df_out["collision_event"] = (
+            (df_out["collision_delta"] > 0)
+            & (df_out["collision_delta"].shift(fill_value=0) <= 0)
+        ).astype(int)
 
-# --- Helper to compute accel/jerk and stats ---
+        # Optional: cumulative number of events
+        df_out["collision_event_cum"] = df_out["collision_event"].cumsum()
+    else:
+        df_out["collision_event"] = 0
+        df_out["collision_event_cum"] = 0
+    return df_out
 
-def compute_a_and_jerk(df):
-    a = df["a_cmd_total"].values
-    if "jerk" in df.columns:
-        jerk = df["jerk"].values
+
+df = add_collision_events(df)
+
+
+# -------------------------------------------------
+# Episode-level statistics (comfort + safety)
+# -------------------------------------------------
+def episode_stats(ep_df: pd.DataFrame, ep_idx: int) -> None:
+    a = ep_df["a_cmd_total"].values
+
+    # Jerk: use column if present, else compute
+    if "jerk" in ep_df.columns:
+        jerk = ep_df["jerk"].values
     else:
         jerk = np.diff(a) / dt
         jerk = np.concatenate([[0.0], jerk])
-    return a, jerk
 
-def comfort_stats(name, df, a, jerk):
-    print(f"\n=== {name} ===")
-    mean_speed = df["av_speed"].mean()
-    print(f"Mean speed: {mean_speed:.3f} m/s")
-    print(f"RMS accel: {np.sqrt(np.mean(a**2)):.3f} m/s^2")
-    print(f"RMS jerk : {np.sqrt(np.mean(jerk**2)):.3f} m/s^3")
-    print(f"Max decel (most negative a): {np.min(a):.3f} m/s^2")
+    mean_speed = ep_df["av_speed"].mean()
+    rms_accel = float(np.sqrt(np.mean(a ** 2)))
+    rms_jerk = float(np.sqrt(np.mean(jerk ** 2)))
+    max_decel = float(np.min(a))
 
-    if "collision_count" in df.columns:
-        # collision_count is cumulative; total collisions in this run:
-        total_collisions = int(df["collision_count"].iloc[-1] -
-                               df["collision_count"].iloc[0])
-        print(f"Total collisions: {total_collisions}")
+    unsafe_steps = int((ep_df["time_headway"] < 1.0).sum()) if "time_headway" in ep_df.columns else 0
 
-    if "time_headway" in df.columns:
-        unsafe_steps = int((df["time_headway"] < 1.0).sum())
-        print(f"Steps with time_headway < 1 s: {unsafe_steps}")
+    # Collision events in this episode (1 per collision)
+    total_collisions = 0
+    if "collision_event" in ep_df.columns:
+        total_collisions = int(ep_df["collision_event"].sum())
 
-# --- 1. Speed vs time (all runs) ---
+    print(f"\n=== Episode {ep_idx} ===")
+    print(f"Steps: {len(ep_df)}")
+    print(f"Mean speed : {mean_speed:.3f} m/s")
+    print(f"RMS accel : {rms_accel:.3f} m/s^2")
+    print(f"RMS jerk  : {rms_jerk:.3f} m/s^3")
+    print(f"Max decel : {max_decel:.3f} m/s^2")
+    print(f"Unsafe headway (<1s): {unsafe_steps} steps")
+    print(f"Collision events    : {total_collisions}")
 
-plt.figure()
-for df, c in zip(runs, colors):
-    run_id = df["run_id"].iloc[0]
-    plt.plot(df["step"], df["av_speed"],
-             label=f"Run {run_id}", alpha=0.8, color=c)
-plt.xlabel("Step")
-plt.ylabel("Speed [m/s]")
-plt.legend()
-plt.title("RL speed vs. time across runs")
-plt.grid(True)
 
-# --- 2. Acceleration vs time (all runs) ---
+for ep in range(1, num_episodes + 1):
+    ep_df = df[df["episode"] == ep]
+    if len(ep_df) == 0:
+        continue
+    episode_stats(ep_df, ep)
 
-plt.figure()
-for df, c in zip(runs, colors):
-    run_id = df["run_id"].iloc[0]
-    a, _ = compute_a_and_jerk(df)
-    plt.plot(df["step"], a,
-             label=f"Run {run_id}", alpha=0.6, color=c)
-plt.xlabel("Step")
-plt.ylabel("Acceleration [m/s^2]")
-plt.legend()
-plt.title("RL acceleration vs. time across runs")
-plt.grid(True)
 
-# --- 3. Jerk vs time (all runs) ---
+# -------------------------------------------------
+# Run-level collision bar chart (Idea C)
+# -------------------------------------------------
+# Group by run_index and count number of collision events per run
+run_collision_stats = df.groupby("run_index")["collision_event"].sum()
 
 plt.figure()
-for df, c in zip(runs, colors):
-    run_id = df["run_id"].iloc[0]
-    _, jerk = compute_a_and_jerk(df)
-    plt.plot(df["step"], jerk,
-             label=f"Run {run_id}", alpha=0.6, color=c)
-plt.xlabel("Step")
-plt.ylabel("Jerk [m/s^3]")
-plt.legend()
-plt.title("RL jerk vs. time across runs")
-plt.grid(True)
-
-# --- 4. Time headway vs time (all runs) ---
-
-plt.figure()
-for df, c in zip(runs, colors):
-    run_id = df["run_id"].iloc[0]
-    plt.plot(df["step"], df["time_headway"],
-             label=f"Run {run_id}", alpha=0.6, color=c)
-plt.axhline(1.0, color="r", linestyle="--", label="1 s threshold")
-plt.xlabel("Step")
-plt.ylabel("Time headway [s]")
-plt.legend()
-plt.title("RL time headway vs. time across runs")
-plt.grid(True)
-
-# --- 5. Collisions vs time (all runs) ---
-
-plt.figure()
-for df, c in zip(runs, colors):
-    run_id = df["run_id"].iloc[0]
-    if "collision_count" in df.columns:
-        plt.plot(df["step"], df["collision_count"],
-                 label=f"Run {run_id}", alpha=0.8, color=c)
-plt.xlabel("Step")
-plt.ylabel("Cumulative collisions")
-plt.legend()
-plt.title("RL collisions vs. time across runs")
-plt.grid(True)
-
-# --- 6. Summary stats per run ---
-
-for df in runs:
-    run_id = df["run_id"].iloc[0]
-    a, jerk = compute_a_and_jerk(df)
-    comfort_stats(f"RL run {run_id}", df, a, jerk)
+run_collision_stats.plot(kind="bar", color="tab:blue", edgecolor="black")
+plt.ylabel("Number of collision events per run")
+plt.xlabel("Run index")
+plt.title("Collisions per training run (1 unit = 1 collision)")
+plt.grid(axis="y", linestyle="--", alpha=0.5)
+plt.tight_layout()
 
 plt.show()
