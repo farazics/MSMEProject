@@ -144,7 +144,7 @@ def main():
     # Synchronous mode
     settings = world.get_settings()
     settings.synchronous_mode = True
-    settings.fixed_delta_seconds = 0.1         # match your controller dt
+    settings.fixed_delta_seconds = 0.05         # match your controller dt
     world.apply_settings(settings)
 
     tm.set_synchronous_mode(True)              # TM runs in lockstep with world
@@ -202,7 +202,7 @@ def main():
         time_headway=3.0,
         standstill_gap=5.0,
         alpha=1.0,
-        dt=0.1
+        dt=0.05
     )
 
     # RL agent with persistent Q-table
