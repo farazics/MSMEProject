@@ -172,7 +172,7 @@ def main():
     # Spawn NPC vehicles
     spawn_points = world.get_map().get_spawn_points()
     npc_vehicles = []
-    num_npcs = 50
+    num_npcs = 75
     random.shuffle(spawn_points)
     for sp, bp in zip(spawn_points, random.choices(vehicle_bps, k=num_npcs)):
         npc = world.try_spawn_actor(bp, sp)
