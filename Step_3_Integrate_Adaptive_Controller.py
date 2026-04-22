@@ -45,7 +45,7 @@ def main():
     # Synchronous mode
     settings = world.get_settings()
     settings.synchronous_mode = True           # world waits for world.tick()
-    settings.fixed_delta_seconds = 0.05         # match controller.dt
+    settings.fixed_delta_seconds = 0.08         # match controller.dt
     world.apply_settings(settings)
 
     tm.set_synchronous_mode(True)
@@ -107,7 +107,7 @@ def main():
         time_headway=3.0,
         standstill_gap=5.0,
         alpha=1.0,
-        dt=0.05
+        dt=0.08
     )
 
     # Spectator view
