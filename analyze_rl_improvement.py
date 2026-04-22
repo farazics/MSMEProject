@@ -2,29 +2,31 @@ import pandas as pd  # type: ignore
 import numpy as np
 import matplotlib.pyplot as plt
 
+# -----------------------------------------
 # Load long-run log
+# -----------------------------------------
 df = pd.read_csv("RL_long.csv")
 
-# -------------------------------------------------
+# -----------------------------------------
 # Global configuration
-# -------------------------------------------------
-dt = 0.1             # must match your controller timestep
-steps_per_ep = 100   # virtual episode length in steps
+# -----------------------------------------
+dt = 0.1            # must match your controller timestep
+steps_per_ep = 100  # virtual episode length in steps
 
 # Add a virtual episode index: 1..num_episodes
 num_episodes = df["step"].max() // steps_per_ep
 df["episode"] = ((df["step"] - 1) // steps_per_ep) + 1
 
-# If you have a run index column (e.g., "run"), keep it; otherwise, assume one run
+# Ensure we have a run index column
 if "run" not in df.columns and "run_index" not in df.columns:
     df["run_index"] = 1
 elif "run" in df.columns:
     df = df.rename(columns={"run": "run_index"})
 
 
-# -------------------------------------------------
+# -----------------------------------------
 # Collision event extraction (1 per collision)
-# -------------------------------------------------
+# -----------------------------------------
 def add_collision_events(df_in: pd.DataFrame) -> pd.DataFrame:
     df_out = df_in.copy()
     if "collision_count" in df_out.columns:
@@ -36,21 +38,17 @@ def add_collision_events(df_in: pd.DataFrame) -> pd.DataFrame:
             (df_out["collision_delta"] > 0)
             & (df_out["collision_delta"].shift(fill_value=0) <= 0)
         ).astype(int)
-
-        # Optional: cumulative number of events
-        df_out["collision_event_cum"] = df_out["collision_event"].cumsum()
     else:
         df_out["collision_event"] = 0
-        df_out["collision_event_cum"] = 0
     return df_out
 
 
 df = add_collision_events(df)
 
 
-# -------------------------------------------------
+# -----------------------------------------
 # Episode-level statistics (comfort + safety)
-# -------------------------------------------------
+# -----------------------------------------
 def episode_stats(ep_df: pd.DataFrame, ep_idx: int) -> None:
     a = ep_df["a_cmd_total"].values
 
@@ -90,18 +88,33 @@ for ep in range(1, num_episodes + 1):
     episode_stats(ep_df, ep)
 
 
-# -------------------------------------------------
-# Run-level collision bar chart (Idea C)
-# -------------------------------------------------
-# Group by run_index and count number of collision events per run
-run_collision_stats = df.groupby("run_index")["collision_event"].sum()
-
+# -----------------------------------------
+# Idea A: spike plot of collision events over time
+# -----------------------------------------
 plt.figure()
-run_collision_stats.plot(kind="bar", color="tab:blue", edgecolor="black")
-plt.ylabel("Number of collision events per run")
-plt.xlabel("Run index")
-plt.title("Collisions per training run (1 unit = 1 collision)")
-plt.grid(axis="y", linestyle="--", alpha=0.5)
+
+for run_id, run_df in df.groupby("run_index"):
+    # Steps where a collision event starts
+    mask = run_df["collision_event"] == 1
+    event_steps = run_df["step"][mask]
+
+    if len(event_steps) == 0:
+        continue
+
+    # Draw a vertical line (spike) for each collision event
+    for s in event_steps:
+        plt.vlines(s, ymin=0, ymax=1,
+                   colors=None, alpha=0.7)
+
+    # Add a label once per run for the legend (use a line at y=1)
+    plt.vlines([], [], [], label=f"Run {run_id}")  # dummy for legend
+
+plt.ylim(0, 1.1)
+plt.yticks([])  # hide y-axis; spikes encode events
+plt.xlabel("Step")
+plt.title("Collision events over time across runs\n(1 spike = 1 collision event)")
+plt.grid(axis="x", linestyle="--", alpha=0.5)
+plt.legend()
 plt.tight_layout()
 
 plt.show()
