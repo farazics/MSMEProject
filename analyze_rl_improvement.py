@@ -38,8 +38,12 @@ def add_collision_events(df_in: pd.DataFrame) -> pd.DataFrame:
             (df_out["collision_delta"] > 0)
             & (df_out["collision_delta"].shift(fill_value=0) <= 0)
         ).astype(int)
+
+        # Cumulative number of collision events
+        df_out["collision_event_cum"] = df_out["collision_event"].cumsum()
     else:
         df_out["collision_event"] = 0
+        df_out["collision_event_cum"] = 0
     return df_out
 
 
@@ -89,31 +93,18 @@ for ep in range(1, num_episodes + 1):
 
 
 # -----------------------------------------
-# Idea A: spike plot of collision events over time
+# Idea B: cumulative collision events vs time across runs
 # -----------------------------------------
 plt.figure()
 
 for run_id, run_df in df.groupby("run_index"):
-    # Steps where a collision event starts
-    mask = run_df["collision_event"] == 1
-    event_steps = run_df["step"][mask]
+    plt.step(run_df["step"], run_df["collision_event_cum"],
+             where="post", label=f"Run {run_id}", alpha=0.8)
 
-    if len(event_steps) == 0:
-        continue
-
-    # Draw a vertical line (spike) for each collision event
-    for s in event_steps:
-        plt.vlines(s, ymin=0, ymax=1,
-                   colors=None, alpha=0.7)
-
-    # Add a label once per run for the legend (use a line at y=1)
-    plt.vlines([], [], [], label=f"Run {run_id}")  # dummy for legend
-
-plt.ylim(0, 1.1)
-plt.yticks([])  # hide y-axis; spikes encode events
 plt.xlabel("Step")
-plt.title("Collision events over time across runs\n(1 spike = 1 collision event)")
-plt.grid(axis="x", linestyle="--", alpha=0.5)
+plt.ylabel("Number of collision events")
+plt.title("RL collisions vs. time across runs\n(1 unit = 1 collision event)")
+plt.grid(True, linestyle="--", alpha=0.5)
 plt.legend()
 plt.tight_layout()
 
