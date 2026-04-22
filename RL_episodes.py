@@ -4,6 +4,8 @@ import math
 import random
 import numpy as np
 import carla
+import glob
+import os
 
 from adaptive_controller import AdaptiveController
 
@@ -36,7 +38,7 @@ class DiscreteRLAgent:
         # Discretization
         self.v_bins = v_bins
         self.d_bins = d_bins
-        self.dv_bins = dv_binsg
+        self.dv_bins = dv_bins
         self.actions = actions
 
         # RL params
@@ -107,6 +109,21 @@ class DiscreteRLAgent:
 
 
 def main():
+    # Auto-increment run id based on existing RL_long_run*.csv files
+    existing = glob.glob("RL_long_run*.csv")
+    if not existing:
+        run_id = 1
+    else:
+        numbers = []
+        for fname in existing:
+            base = os.path.basename(fname)          # e.g. RL_long_run3.csv
+            digits = "".join(ch for ch in base if ch.isdigit())
+            if digits:
+                numbers.append(int(digits))
+        run_id = max(numbers) + 1 if numbers else 1
+
+    print(f"Starting RL run_id = {run_id}")
+    
     try:
         print("Connecting to CARLA server...")
         client = carla.Client('localhost', 2000)
@@ -124,10 +141,13 @@ def main():
     tm = client.get_trafficmanager()
     tm_port = tm.get_port()
 
-    # Asynchronous mode
+    # Synchronous mode
     settings = world.get_settings()
-    settings.synchronous_mode = False
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = 0.05         # match your controller dt
     world.apply_settings(settings)
+
+    tm.set_synchronous_mode(True)              # TM runs in lockstep with world
 
     # Get spawn points
     spawns = world.get_map().get_spawn_points()
@@ -182,7 +202,7 @@ def main():
         time_headway=3.0,
         standstill_gap=5.0,
         alpha=1.0,
-        dt=0.1
+        dt=0.05
     )
 
     # RL agent with persistent Q-table
@@ -197,7 +217,7 @@ def main():
     ))
 
     # Logging setup: one long run
-    log_filename = "RL_long.csv"
+    log_filename = f"RL_long_run{run_id}.csv"
     steps_total = 10000  # e.g. 10k steps
 
     with open(log_filename, mode='w', newline='') as csvfile:
@@ -390,11 +410,15 @@ def main():
                 collision_history["collision_count"]
             ])
 
-            time.sleep(controller.dt)
+            world.tick()                # <-- advance simulation one step
 
     # Save Q-table after long run
     rl_agent.save(q_table_path)
     print(f"Simulation complete. Log saved to {log_filename}")
+
+     # Also keep a copy as RL_long_latest.csv for quick inspection
+    import shutil
+    shutil.copyfile(log_filename, "RL_long_latest.csv")
 
     # Clean up actors (including sensor) to avoid warnings
     for a in actors_to_destroy:
@@ -402,6 +426,13 @@ def main():
             a.destroy()
         except Exception:
             pass
+
+    # Restore async mode before exit
+    settings = world.get_settings()
+    settings.synchronous_mode = False
+    settings.fixed_delta_seconds = None
+    world.apply_settings(settings)
+    tm.set_synchronous_mode(False)
 
 if __name__ == '__main__':
     main()
