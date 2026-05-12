@@ -23,7 +23,6 @@ def get_vehicle_state(vehicle):
 
 
 def get_next_run_filename(prefix="CBF_controller_run", folder="."):
-    """Auto-increment run number: CBF_controller_run1.csv, run2.csv, ..."""
     i = 1
     while os.path.exists(os.path.join(folder, f"{prefix}{i}.csv")):
         i += 1
@@ -56,7 +55,6 @@ def main():
         return
 
     av_tf = spawns[0]
-
     bp_lib = world.get_blueprint_library()
     av_bp = bp_lib.find('vehicle.tesla.model3')
     vehicle_bps = bp_lib.filter('*vehicle*')
@@ -74,3 +72,200 @@ def main():
     random.shuffle(spawn_points)
     for sp, bp in zip(spawn_points, random.choices(vehicle_bps, k=num_npcs)):
         npc = world.try_spawn_actor(bp, sp)
+        if npc is not None and npc.id != av.id:
+            npc.set_autopilot(True, tm_port)
+            npc_vehicles.append(npc)
+    print(f"Spawned {len(npc_vehicles)} NPC vehicles registered to TM.")
+    actors_to_destroy.extend(npc_vehicles)
+
+    # --- Collision sensor: longitudinal count + lateral termination flag ---
+    collision_history = {
+        "longitudinal_collision_count": 0,
+        "lateral_collision_detected": False
+    }
+
+    def on_collision(event):
+        ego_fwd = av.get_transform().get_forward_vector()
+        impulse = event.normal_impulse
+        long_component = abs(
+            impulse.x * ego_fwd.x +
+            impulse.y * ego_fwd.y +
+            impulse.z * ego_fwd.z
+        )
+        lat_component = math.sqrt(
+            (impulse.x - long_component * ego_fwd.x) ** 2 +
+            (impulse.y - long_component * ego_fwd.y) ** 2
+        )
+        if long_component >= lat_component:
+            collision_history["longitudinal_collision_count"] += 1
+        else:
+            collision_history["lateral_collision_detected"] = True
+            print("LATERAL COLLISION DETECTED — AV left the path. Terminating run.")
+
+    col_bp = bp_lib.find('sensor.other.collision')
+    col_tf = carla.Transform(carla.Location(x=0.0, y=0.0, z=1.0))
+    collision_sensor = world.try_spawn_actor(col_bp, col_tf, attach_to=av)
+    if collision_sensor is None:
+        print("WARNING: Could not spawn collision sensor.")
+    else:
+        collision_sensor.listen(on_collision)
+        actors_to_destroy.append(collision_sensor)
+
+    # Adaptive longitudinal controller — time_headway = 1.5 s
+    controller = AdaptiveController(
+        time_headway=1.5,
+        standstill_gap=5.0,
+        alpha=1.0,
+        dt=0.1
+    )
+
+    spectator = world.get_spectator()
+    spectator.set_transform(carla.Transform(
+        av_tf.location + carla.Location(z=30),
+        carla.Rotation(pitch=-90)
+    ))
+
+    log_filename = get_next_run_filename("CBF_controller_run")
+    print(f"Logging to: {log_filename}")
+
+    COMFORT_COLUMNS = [
+        "step",
+        "av_speed",
+        "a_cmd",
+        "jerk",
+        "lead_speed",
+        "distance_headway",
+        "time_headway",
+        "longitudinal_collision_count"
+    ]
+
+    v_des = 12.0
+    nominal_acc = 1.0
+    prev_a_cmd = 0.0
+    terminated_early = False
+
+    with open(log_filename, mode='w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(COMFORT_COLUMNS)
+        print("Starting simulation: CBF Baseline with TM traffic...")
+
+        for i in range(1, 2001):
+            # Terminate if AV left the path (lateral collision)
+            if collision_history["lateral_collision_detected"]:
+                print(f"Run terminated at step {i} due to lateral collision (AV off-path).")
+                terminated_early = True
+                break
+
+            av_state = get_vehicle_state(av)
+            v = math.hypot(av_state['vx'], av_state['vy'])
+
+            ego_tf = av.get_transform()
+            ego_loc = ego_tf.location
+            ego_forward = ego_tf.get_forward_vector()
+            ego_wp = world.get_map().get_waypoint(ego_loc, project_to_road=True)
+
+            vehicles = world.get_actors().filter('vehicle.*')
+            leader = None
+            leader_dist = float('inf')
+
+            for veh in vehicles:
+                if veh.id == av.id:
+                    continue
+                tf_v = veh.get_transform()
+                loc_v = tf_v.location
+                rel = loc_v - ego_loc
+                dot = (
+                    rel.x * ego_forward.x +
+                    rel.y * ego_forward.y +
+                    rel.z * ego_forward.z
+                )
+                if dot <= 0:
+                    continue
+                veh_wp = world.get_map().get_waypoint(loc_v, project_to_road=True)
+                if (veh_wp.road_id != ego_wp.road_id or
+                        veh_wp.lane_id != ego_wp.lane_id):
+                    continue
+                dist = math.sqrt(rel.x ** 2 + rel.y ** 2 + rel.z ** 2)
+                if dist < leader_dist and dist > 1.0:
+                    leader_dist = dist
+                    leader = veh
+
+            hdv_state = None
+            if leader is not None:
+                tf_l = leader.get_transform()
+                vel_l = leader.get_velocity()
+                hdv_state = {
+                    'x': tf_l.location.x,
+                    'y': tf_l.location.y,
+                    'vx': vel_l.x,
+                    'vy': vel_l.y,
+                    'yaw': math.radians(tf_l.rotation.yaw)
+                }
+
+            if hdv_state is not None:
+                a_cmd = controller.compute_control(av_state, hdv_state, nominal_acc)
+            else:
+                k_p = 0.5
+                a_cmd = k_p * (v_des - v)
+
+            a_cmd = float(np.clip(a_cmd, -4.0, 2.0))
+            jerk = (a_cmd - prev_a_cmd) / controller.dt
+            prev_a_cmd = a_cmd
+
+            throttle_cmd = float(np.clip(max(a_cmd, 0.0), 0.0, 1.0))
+            brake_cmd = float(np.clip(max(-a_cmd, 0.0), 0.0, 1.0))
+
+            av.apply_control(carla.VehicleControl(
+                throttle=throttle_cmd,
+                brake=brake_cmd,
+                steer=0.0,
+                manual_gear_shift=False
+            ))
+
+            av_tf_curr = av.get_transform()
+            chase_loc = (av_tf_curr.location -
+                         av_tf_curr.get_forward_vector() * 8 +
+                         carla.Location(z=5))
+            chase_rot = carla.Rotation(pitch=-15, yaw=av_tf_curr.rotation.yaw)
+            spectator.set_transform(carla.Transform(chase_loc, chase_rot))
+
+            lead_speed = dist_headway = time_headway = float('nan')
+            if hdv_state is not None:
+                lead_speed = math.hypot(hdv_state['vx'], hdv_state['vy'])
+                dist_headway = leader_dist
+                if v > 0.1:
+                    time_headway = dist_headway / v
+
+            writer.writerow([
+                i,
+                round(v, 4),
+                round(a_cmd, 4),
+                round(jerk, 4),
+                round(lead_speed, 4) if not math.isnan(lead_speed) else lead_speed,
+                round(dist_headway, 4) if not math.isnan(dist_headway) else dist_headway,
+                round(time_headway, 4) if not math.isnan(time_headway) else time_headway,
+                collision_history["longitudinal_collision_count"]
+            ])
+
+            print(
+                f"Iter {i:04d}: v={v:.2f} m/s, a={a_cmd:.2f} m/s2, "
+                f"jerk={jerk:.2f} m/s3, TH={time_headway:.2f} s, "
+                f"lon_col={collision_history['longitudinal_collision_count']}"
+            )
+
+            time.sleep(controller.dt)
+
+    if terminated_early:
+        print(f"Run ended early — lateral collision (AV off-path). Data saved to {log_filename}")
+    else:
+        print(f"Simulation complete. Log saved to {log_filename}")
+
+    for a in actors_to_destroy:
+        try:
+            a.destroy()
+        except Exception:
+            pass
+
+
+if __name__ == '__main__':
+    main()
