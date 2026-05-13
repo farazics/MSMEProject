@@ -120,9 +120,9 @@ def main():
 
     # Adaptive longitudinal controller
     controller = AdaptiveController(
-        time_headway=3.0,
-        standstill_gap=5.0,
-        alpha=1.0,
+        time_headway=2.0,    # was 3.0 → match new default
+        standstill_gap=6.0,  # was 5.0 → match new default
+        alpha=0.5,           # was 1.0 → less aggressive
         dt=0.08
     )
 
@@ -229,8 +229,9 @@ def main():
                 )
             else:
                 # Free road: simple speed control toward v_des
-                k_p = 0.5
+                k_p = 0.3              # was 0.5 → gentler proportional gain
                 a_cmd = k_p * (v_des - v)
+                a_cmd = float(np.clip(a_cmd, -3.0, 1.96))  # Free-road startup acceleration cap
 
             # Map acceleration to throttle / brake
             throttle_cmd = max(a_cmd, 0.0)
