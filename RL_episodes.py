@@ -199,9 +199,9 @@ def main():
 
     # Adaptive longitudinal controller
     controller = AdaptiveController(
-        time_headway=3.0,
-        standstill_gap=5.0,
-        alpha=1.0,
+        time_headway=2.0,
+        standstill_gap=6.0,
+        alpha=0.5,
         dt=0.08
     )
 
@@ -312,8 +312,7 @@ def main():
             else:
                 k_p = 0.5
                 a_acc = k_p * (v_des - v)
-
-            a_acc = float(np.clip(a_acc, -4.0, 2.0))
+                a_acc = float(np.clip(a_acc, -3.0, 1.0))
 
             # RL state
             if hdv_state is not None:
@@ -331,7 +330,7 @@ def main():
 
             # Combine ACC + RL
             a_cmd_total = a_acc + a_rl
-            a_cmd_total = float(np.clip(a_cmd_total, -4.0, 2.0))
+            a_cmd_total = float(np.clip(a_cmd_total, -3.0, 1.96))
 
             # Reward: comfort + safety + collisions
             jerk = (a_cmd_total - prev_a_cmd_total) / controller.dt
