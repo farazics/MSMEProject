@@ -1,3 +1,5 @@
+import glob
+import os
 import time
 import csv
 import math
@@ -22,6 +24,20 @@ def get_vehicle_state(vehicle):
 
 
 def main():
+    # Auto-increment run id 
+    existing = glob.glob("CBF_Controller_run*.csv")
+    if not existing:
+        run_id = 1
+    else:
+        numbers = []
+        for fname in existing:
+            base = os.path.basename(fname)          # e.g. CBF_Controller_run3.csv
+            digits = "".join(ch for ch in base if ch.isdigit())
+            if digits:
+                numbers.append(int(digits))
+        run_id = max(numbers) + 1 if numbers else 1
+
+    print(f"Starting RL run_id = {run_id}")
     client = None
     world = None
     tm = None
@@ -104,9 +120,9 @@ def main():
 
     # Adaptive longitudinal controller
     controller = AdaptiveController(
-        time_headway=3.0,
-        standstill_gap=5.0,
-        alpha=1.0,
+        time_headway=2.0,    # was 3.0 → match new default
+        standstill_gap=6.0,  # was 5.0 → match new default
+        alpha=0.5,           # was 1.0 → less aggressive
         dt=0.08
     )
 
@@ -121,7 +137,7 @@ def main():
     world.tick()
 
     # Logging setup
-    log_filename = "CBF_Controller.csv"
+    log_filename = f"CBF_Controller_run{run_id}.csv"
     with open(log_filename, mode='w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([
@@ -213,8 +229,9 @@ def main():
                 )
             else:
                 # Free road: simple speed control toward v_des
-                k_p = 0.5
+                k_p = 0.3              # was 0.5 → gentler proportional gain
                 a_cmd = k_p * (v_des - v)
+                a_cmd = float(np.clip(a_cmd, -3.0, 1.96))  # Free-road startup acceleration cap
 
             # Map acceleration to throttle / brake
             throttle_cmd = max(a_cmd, 0.0)
