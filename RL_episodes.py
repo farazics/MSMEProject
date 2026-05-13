@@ -2,10 +2,10 @@ import time
 import csv
 import math
 import random
-import os
-
 import numpy as np
 import carla
+import glob
+import os
 
 from adaptive_controller import AdaptiveController
 
@@ -22,13 +22,6 @@ def get_vehicle_state(vehicle):
     }
 
 
-def get_next_run_filename(prefix="RL_run", folder="."):
-    i = 1
-    while os.path.exists(os.path.join(folder, f"{prefix}{i}.csv")):
-        i += 1
-    return os.path.join(folder, f"{prefix}{i}.csv")
-
-
 # ===================== RL Agent =====================
 class DiscreteRLAgent:
     def __init__(self,
@@ -42,21 +35,26 @@ class DiscreteRLAgent:
                  eps_end=0.05,
                  eps_decay=1e-4,
                  q_init_path=None):
+        # Discretization
         self.v_bins = v_bins
         self.d_bins = d_bins
         self.dv_bins = dv_bins
         self.actions = actions
+
+        # RL params
         self.alpha = alpha
         self.gamma = gamma
         self.eps = eps_start
         self.eps_end = eps_end
         self.eps_decay = eps_decay
 
+        # Q-table shape
         shape = (len(v_bins) - 1,
                  len(d_bins) - 1,
                  len(dv_bins) - 1,
                  len(actions))
 
+        # Initialize or load Q-table
         if q_init_path is not None:
             try:
                 q_loaded = np.load(q_init_path)
@@ -77,6 +75,7 @@ class DiscreteRLAgent:
         print(f"Saved Q-table to {path}")
 
     def _bin_index(self, value, edges):
+        # returns index [0, len(edges)-2]
         for i in range(len(edges) - 1):
             if edges[i] <= value < edges[i + 1]:
                 return i
@@ -89,6 +88,7 @@ class DiscreteRLAgent:
         return (v_i, d_i, dv_i)
 
     def select_action(self, state_idx):
+        # epsilon-greedy
         if random.random() < self.eps:
             a_idx = random.randrange(len(self.actions))
         else:
@@ -103,10 +103,27 @@ class DiscreteRLAgent:
         else:
             target = reward + self.gamma * np.max(self.q[s_next_idx])
         self.q[s_idx][a_idx] = q_sa + self.alpha * (target - q_sa)
+
+        # decay epsilon
         self.eps = max(self.eps_end, self.eps - self.eps_decay)
 
 
 def main():
+    # Auto-increment run id based on existing RL_long_run*.csv files
+    existing = glob.glob("RL_long_run*.csv")
+    if not existing:
+        run_id = 1
+    else:
+        numbers = []
+        for fname in existing:
+            base = os.path.basename(fname)          # e.g. RL_long_run3.csv
+            digits = "".join(ch for ch in base if ch.isdigit())
+            if digits:
+                numbers.append(int(digits))
+        run_id = max(numbers) + 1 if numbers else 1
+
+    print(f"Starting RL run_id = {run_id}")
+    
     try:
         print("Connecting to CARLA server...")
         client = carla.Client('localhost', 2000)
@@ -117,25 +134,34 @@ def main():
         print(f"ERROR: Could not connect to CARLA server: {e}")
         return
 
+    # Track actors we spawn so we can destroy them at the end
     actors_to_destroy = []
 
+    # Traffic Manager setup
     tm = client.get_trafficmanager()
     tm_port = tm.get_port()
 
+    # Synchronous mode
     settings = world.get_settings()
-    settings.synchronous_mode = False
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = 0.08         # match your controller dt
     world.apply_settings(settings)
 
+    tm.set_synchronous_mode(True)              # TM runs in lockstep with world
+
+    # Get spawn points
     spawns = world.get_map().get_spawn_points()
     if not spawns:
         print("ERROR: No spawn points found in map.")
         return
     av_tf = spawns[0]
 
+    # Blueprints
     bp_lib = world.get_blueprint_library()
     av_bp = bp_lib.find('vehicle.tesla.model3')
     vehicle_bps = bp_lib.filter('*vehicle*')
 
+    # Spawn AV
     av = world.try_spawn_actor(av_bp, av_tf)
     if av is None:
         print("ERROR: Could not spawn AV.")
@@ -143,6 +169,7 @@ def main():
     av.set_autopilot(True, tm_port)
     actors_to_destroy.append(av)
 
+    # Spawn NPC vehicles
     spawn_points = world.get_map().get_spawn_points()
     npc_vehicles = []
     num_npcs = 35
@@ -155,29 +182,11 @@ def main():
     print(f"Spawned {len(npc_vehicles)} NPC vehicles registered to TM.")
     actors_to_destroy.extend(npc_vehicles)
 
-    # --- Collision sensor: longitudinal count + lateral termination flag ---
-    collision_history = {
-        "longitudinal_collision_count": 0,
-        "lateral_collision_detected": False
-    }
+    # Collision sensor setup
+    collision_history = {"collision_count": 0}
 
     def on_collision(event):
-        ego_fwd = av.get_transform().get_forward_vector()
-        impulse = event.normal_impulse
-        long_component = abs(
-            impulse.x * ego_fwd.x +
-            impulse.y * ego_fwd.y +
-            impulse.z * ego_fwd.z
-        )
-        lat_component = math.sqrt(
-            (impulse.x - long_component * ego_fwd.x) ** 2 +
-            (impulse.y - long_component * ego_fwd.y) ** 2
-        )
-        if long_component >= lat_component:
-            collision_history["longitudinal_collision_count"] += 1
-        else:
-            collision_history["lateral_collision_detected"] = True
-            print("LATERAL COLLISION DETECTED — AV left the path. Terminating run.")
+        collision_history["collision_count"] += 1
 
     col_bp = bp_lib.find('sensor.other.collision')
     col_tf = carla.Transform(carla.Location(x=0.0, y=0.0, z=1.0))
@@ -188,71 +197,69 @@ def main():
         collision_sensor.listen(on_collision)
         actors_to_destroy.append(collision_sensor)
 
-    # Adaptive longitudinal controller — time_headway = 1.5 s
+    # Adaptive longitudinal controller
     controller = AdaptiveController(
-        time_headway=1.5,
+        time_headway=3.0,
         standstill_gap=5.0,
         alpha=1.0,
-        dt=0.1
+        dt=0.08
     )
 
+    # RL agent with persistent Q-table
     q_table_path = "q_table.npy"
     rl_agent = DiscreteRLAgent(q_init_path=q_table_path)
 
+    # Spectator view
     spectator = world.get_spectator()
     spectator.set_transform(carla.Transform(
         av_tf.location + carla.Location(z=30),
         carla.Rotation(pitch=-90)
     ))
 
-    log_filename = get_next_run_filename("RL_run")
-    print(f"Logging to: {log_filename}")
-
-    steps_total = 10000
-
-    COMFORT_COLUMNS = [
-        "step",
-        "av_speed",
-        "a_acc",
-        "a_rl",
-        "a_cmd_total",
-        "jerk",
-        "lead_speed",
-        "distance_headway",
-        "time_headway",
-        "longitudinal_collision_count"
-    ]
-
-    v_des = 12.0
-    nominal_acc = 1.0
-    prev_a_cmd_total = 0.0
-    collision_count_prev = 0
-    terminated_early = False
-
-    # Safe defaults so terminal Q-update never references unbound variables
-    s_idx = (0, 0, 0)
-    a_idx = 0
+    # Logging setup: one long run
+    log_filename = f"RL_long_run{run_id}.csv"
+    steps_total = 10000  # e.g. 10k steps
 
     with open(log_filename, mode='w', newline='') as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(COMFORT_COLUMNS)
-        print("Starting simulation: RL + ACC with TM traffic...")
+        writer.writerow([
+            "step",
+            "av_x", "av_y", "av_yaw",
+            "av_speed",
+            "a_acc",        # ACC acceleration only
+            "a_rl",         # RL correction
+            "a_cmd_total",  # a_acc + a_rl
+            "jerk",
+            "throttle_cmd",
+            "brake_cmd",
+            "lead_id",
+            "lead_x",
+            "lead_y",
+            "lead_speed",
+            "distance_headway",
+            "time_headway",
+            "collision_count"
+        ])
+
+        print("Starting long simulation with TM traffic + ACC + RL...")
+
+        v_des = 12.0
+        nominal_acc = 1.0
+        prev_a_cmd_total = 0.0
+        collision_count_prev = 0  # for collision-based reward
 
         for step in range(1, steps_total + 1):
-            # Terminate if AV left the path (lateral collision)
-            if collision_history["lateral_collision_detected"]:
-                print(f"Run terminated at step {step} due to lateral collision (AV off-path).")
-                rl_agent.update(s_idx, a_idx, -100.0, s_idx, done=True)
-                terminated_early = True
-                break
-
+            # Ego state
             av_state = get_vehicle_state(av)
             v = math.hypot(av_state['vx'], av_state['vy'])
 
+            # --- Find closest leader ahead in same lane ---
             ego_tf = av.get_transform()
             ego_loc = ego_tf.location
             ego_forward = ego_tf.get_forward_vector()
-            ego_wp = world.get_map().get_waypoint(ego_loc, project_to_road=True)
+            ego_wp = world.get_map().get_waypoint(
+                ego_loc, project_to_road=True
+            )
 
             vehicles = world.get_actors().filter('vehicle.*')
             leader = None
@@ -263,6 +270,7 @@ def main():
                     continue
                 tf_v = veh.get_transform()
                 loc_v = tf_v.location
+
                 rel = loc_v - ego_loc
                 dot = (
                     rel.x * ego_forward.x +
@@ -271,10 +279,14 @@ def main():
                 )
                 if dot <= 0:
                     continue
-                veh_wp = world.get_map().get_waypoint(loc_v, project_to_road=True)
+
+                veh_wp = world.get_map().get_waypoint(
+                    loc_v, project_to_road=True
+                )
                 if (veh_wp.road_id != ego_wp.road_id or
                         veh_wp.lane_id != ego_wp.lane_id):
                     continue
+
                 dist = math.sqrt(rel.x ** 2 + rel.y ** 2 + rel.z ** 2)
                 if dist < leader_dist and dist > 1.0:
                     leader_dist = dist
@@ -292,14 +304,18 @@ def main():
                     'yaw': math.radians(tf_l.rotation.yaw)
                 }
 
+            # ACC baseline
             if hdv_state is not None:
-                a_acc = controller.compute_control(av_state, hdv_state, nominal_acc)
+                a_acc = controller.compute_control(
+                    av_state, hdv_state, nominal_acc
+                )
             else:
                 k_p = 0.5
                 a_acc = k_p * (v_des - v)
 
             a_acc = float(np.clip(a_acc, -4.0, 2.0))
 
+            # RL state
             if hdv_state is not None:
                 v_lead = math.hypot(hdv_state['vx'], hdv_state['vy'])
                 dist_headway = leader_dist
@@ -309,31 +325,43 @@ def main():
 
             dv = v_lead - v
             s_idx = rl_agent.state_to_index(v, dist_headway, dv)
+
+            # RL action
             a_idx, a_rl = rl_agent.select_action(s_idx)
 
-            a_cmd_total = float(np.clip(a_acc + a_rl, -4.0, 2.0))
-            jerk = (a_cmd_total - prev_a_cmd_total) / controller.dt
+            # Combine ACC + RL
+            a_cmd_total = a_acc + a_rl
+            a_cmd_total = float(np.clip(a_cmd_total, -4.0, 2.0))
 
+            # Reward: comfort + safety + collisions
+            jerk = (a_cmd_total - prev_a_cmd_total) / controller.dt
+            # Stronger jerk penalty than before
             reward = -0.1 * (a_cmd_total ** 2) - 0.05 * (jerk ** 2)
 
             time_headway = float('nan')
             if v > 0.1:
                 time_headway = dist_headway / v
-            if not math.isnan(time_headway) and time_headway < 1.5:
-                reward -= 5.0
+            if time_headway < 1.0:
+                reward -= 5.0  # unsafe headway penalty
 
-            collision_count_now = collision_history["longitudinal_collision_count"]
+            # Collision penalty: new collisions since last step
+            collision_count_now = collision_history["collision_count"]
             if collision_count_now > collision_count_prev:
                 collisions_this_step = collision_count_now - collision_count_prev
-                reward -= 50.0 * collisions_this_step
-                collision_count_prev = collision_count_now
+                reward -= 50.0 * collisions_this_step  # large penalty per collision
+            collision_count_prev = collision_count_now
 
+            # RL update
             s_next_idx = rl_agent.state_to_index(v, dist_headway, dv)
-            rl_agent.update(s_idx, a_idx, reward, s_next_idx, False)
+            done = False
+            rl_agent.update(s_idx, a_idx, reward, s_next_idx, done)
             prev_a_cmd_total = a_cmd_total
 
-            throttle_cmd = float(np.clip(max(a_cmd_total, 0.0), 0.0, 1.0))
-            brake_cmd = float(np.clip(max(-a_cmd_total, 0.0), 0.0, 1.0))
+            # Map to throttle/brake
+            throttle_cmd = max(a_cmd_total, 0.0)
+            brake_cmd = max(-a_cmd_total, 0.0)
+            throttle_cmd = float(np.clip(throttle_cmd, 0.0, 1.0))
+            brake_cmd = float(np.clip(brake_cmd, 0.0, 1.0))
 
             av.apply_control(carla.VehicleControl(
                 throttle=throttle_cmd,
@@ -342,50 +370,69 @@ def main():
                 manual_gear_shift=False
             ))
 
+            # Spectator chase view
             av_tf_curr = av.get_transform()
             chase_loc = (av_tf_curr.location -
                          av_tf_curr.get_forward_vector() * 8 +
                          carla.Location(z=5))
-            chase_rot = carla.Rotation(pitch=-15, yaw=av_tf_curr.rotation.yaw)
+            chase_rot = carla.Rotation(
+                pitch=-15, yaw=av_tf_curr.rotation.yaw
+            )
             spectator.set_transform(carla.Transform(chase_loc, chase_rot))
 
-            lead_speed = math.hypot(hdv_state['vx'], hdv_state['vy']) if hdv_state else float('nan')
+            # Logging
+            lead_id = -1
+            lead_x = lead_y = lead_speed = float('nan')
+            if hdv_state is not None:
+                lead_id = leader.id
+                lead_x = hdv_state['x']
+                lead_y = hdv_state['y']
+                lead_speed = math.hypot(
+                    hdv_state['vx'], hdv_state['vy']
+                )
 
             writer.writerow([
                 step,
-                round(v, 4),
-                round(a_acc, 4),
-                round(a_rl, 4),
-                round(a_cmd_total, 4),
-                round(jerk, 4),
-                round(lead_speed, 4) if not math.isnan(lead_speed) else lead_speed,
-                round(dist_headway, 4),
-                round(time_headway, 4) if not math.isnan(time_headway) else time_headway,
-                collision_history["longitudinal_collision_count"]
+                av_state['x'], av_state['y'], av_state['yaw'],
+                v,
+                a_acc,
+                a_rl,
+                a_cmd_total,
+                jerk,
+                throttle_cmd,
+                brake_cmd,
+                lead_id,
+                lead_x,
+                lead_y,
+                lead_speed,
+                dist_headway,
+                time_headway,
+                collision_history["collision_count"]
             ])
 
-            print(
-                f"Step {step:05d}: v={v:.2f} m/s, a_acc={a_acc:.2f}, "
-                f"a_rl={a_rl:.2f}, a_total={a_cmd_total:.2f}, "
-                f"jerk={jerk:.2f} m/s3, TH={time_headway:.2f} s, "
-                f"lon_col={collision_history['longitudinal_collision_count']}"
-            )
+            world.tick()                # <-- advance simulation one step
 
-            time.sleep(controller.dt)
-
+    # Save Q-table after long run
     rl_agent.save(q_table_path)
+    print(f"Simulation complete. Log saved to {log_filename}")
 
-    if terminated_early:
-        print(f"Run ended early — lateral collision (AV off-path). Q-table saved. Data saved to {log_filename}")
-    else:
-        print(f"Simulation complete. Log saved to {log_filename}")
+     # Also keep a copy as RL_long_latest.csv for quick inspection
+    import shutil
+    shutil.copyfile(log_filename, "RL_long_latest.csv")
 
+    # Clean up actors (including sensor) to avoid warnings
     for a in actors_to_destroy:
         try:
             a.destroy()
         except Exception:
             pass
 
+    # Restore async mode before exit
+    settings = world.get_settings()
+    settings.synchronous_mode = False
+    settings.fixed_delta_seconds = None
+    world.apply_settings(settings)
+    tm.set_synchronous_mode(False)
 
 if __name__ == '__main__':
     main()
