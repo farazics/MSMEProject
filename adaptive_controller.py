@@ -9,14 +9,14 @@ class AdaptiveController:
     """
 
     def __init__(self,
-                 time_headway: float = 1.8,      # 1.8-second rule
+                 time_headway: float = 2.0,      # was 1.8 → more gap = gentler following
                  standstill_gap: float = 5.0,    # 5 m at standstill
                  alpha: float = 1.0,
                  dt: float = 0.1,
                  dsafe: float = 25.0,
                  h_threshold: float = 0.1,
-                 max_acceleration: float = 3.0,
-                 min_acceleration: float = -5.0):
+                 max_acceleration: float = 1.96, # was 3.0 → caps at Tesla 0.20 g
+                 min_acceleration: float = -3.0): # was -5.0 → caps braking at 0.30 g
         # Safety and control parameters
         self.Th = time_headway          # Time headway (seconds)
         self.d0 = standstill_gap        # Minimum standstill gap (meters)
@@ -52,8 +52,8 @@ class AdaptiveController:
         # Smoothing and filtering state
         self.accel_prev = 0.0
         self.filtered_accel = 0.0
-        self.max_accel_change = 2.0 * dt  # rate limit per step
-        self.lpf_alpha = 0.5              # low-pass filter coefficient
+        self.max_accel_change = 1.0 * dt  # rate limit per step was 2.0 → jerk limiter: max 1.0 m/s³
+        self.lpf_alpha = 0.3              # low-pass filter coefficient was 0.5 → stronger smoothing filter
 
     def blend_control(self, nominal: float, constrained: float, h: float, threshold: float = 0.3) -> float:
         """
@@ -154,7 +154,7 @@ class AdaptiveController:
 
                 # Limit braking strength in this zone for comfort:
                 # - do not brake harder than -0.5 m/s² when gap > 12m
-                u_follow = max(u_follow, -0.5)
+                u_follow = max(u_follow, -0.3) # was -0.5 → gentler mid-range braking
 
                 # Also, avoid slowing below HDV speed here:
                 # if AV is already slower or equal, don't brake more.
@@ -170,7 +170,7 @@ class AdaptiveController:
                 u_follow = k_v * (v_hdv - v_av)
 
                 # In this close region, allow up to -2 m/s² for a stronger but still smooth brake
-                u_follow = max(u_follow, -2.0)
+                u_follow = max(u_follow, -1.5) # was -2.0 → still safe but less abrupt
                 u_nom = np.clip(u_follow, self.min_acceleration, self.max_acceleration)
         # -----------------------------------------------------------------
 
