@@ -92,7 +92,7 @@ def main():
     spawn_points = world.get_map().get_spawn_points()
 
     npc_vehicles = []
-    num_npcs = 65  # start small to avoid jams
+    num_npcs = 35  # start small to avoid jams
 
     random.shuffle(spawn_points)
 
